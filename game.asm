@@ -65,7 +65,7 @@ CHECK_TIME:
     CALL MOVE_PADDLES
     CALL DRAW_PADDLES
 
-    CALL DRAW_UI ; Add this line to draw the player's points
+    CALL DRAW_UI 
             
     JMP CHECK_TIME ; check the time again after execution
 
