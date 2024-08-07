@@ -1,4 +1,4 @@
-STACK SEGMENT PARA STACK 
+STACK SEGMENT PARA STACK
     DB 64 DUP (' ')
 STACK ENDS
 
@@ -9,9 +9,18 @@ DATA SEGMENT PARA 'DATA'
     WIN_BOUNDS DW 6 ; variable used to check collisions early
 
     TIME_AUX DB 0 ; auxiliary variable used when checking if the time has changed
-    
+    GAME_ACTIVE DB 1 ; boolean variable to see if the game has not ended
+    GAME_MODE DB 0 ; 0 for single-player, 1 for two-player
+
     TEXT_FIRST_PLAYER_POINTS DB '0', '$'
     TEXT_SECOND_PLAYER_POINTS DB '0', '$'
+    MAIN_MENU_TEXT DB 'MAIN MENU', 0Dh, 0Ah, '1. Single Player', 0Dh, 0Ah, '2. Two Players', 0Dh, 0Ah, '$'
+    GAME_OVER_TEXT DB 'GAME OVER BUDDY', '$'
+    GAME_OVER_WINNER DB 'First player won!', '$'
+    RESTART_GAME_TEXT DB 'Press R to restart or M to return to main menu', '$'
+
+    FIRST_PLAYER_WIN_MSG DB 'First player won!', '$'
+    SECOND_PLAYER_WIN_MSG DB 'Second player won!', '$'
 
     BALL_ORIGINAL_X DW 0A0h
     BALL_ORIGINAL_Y DW 64h
@@ -23,33 +32,67 @@ DATA SEGMENT PARA 'DATA'
     BALL_VELOCITY_Y DW 05h  
 
     PADDLE_UPPER_X DW 0A0h ; centered horizontally
-    PADDLE_UPPER_Y DW 0Ah  ; near the top
+    PADDLE_UPPER_Y DW 0Ah ; near the top
     PADDLE_UPPER_POINTS DB 0 ; current points of the first player (player one)
 
     PADDLE_LOWER_X DW 0A0h ; centered horizontally
     PADDLE_LOWER_Y DW 0B8h ; near the bottom (0C8h - 0Ah - 10h paddle height)
     PADDLE_LOWER_POINTS DB 0 ; current points of the second player 
 
-    PADDLE_WIDTH DW 2Eh
+    PADDLE_UPPER_WIDTH DW 2Eh ; upper paddle width
+    PADDLE_LOWER_WIDTH DW 2Eh ; lower paddle width
     PADDLE_HEIGHT DW 05h
     PADDLE_VELOCITY DW 12h
+
+    SINGLE_PLAYER_PADDLE_WIDTH DW 14Ah ; larger paddle width for single-player mode
+    ORIGINAL_PADDLE_WIDTH DW 32h ; store the original paddle width
 DATA ENDS
 
 CODE SEGMENT PARA 'CODE'
 
-MAIN PROC FAR 
+MAIN PROC FAR
     ASSUME CS: CODE, DS: DATA, SS: STACK
     PUSH DS ; Push DS segment to stack
     XOR AX, AX ; Clear AX register
     PUSH AX ; Push AX to stack
     MOV AX, DATA ; Load DATA segment address to AX
     MOV DS, AX ; Load DS with DATA segment address
+    MOV AX, STACK ; Load STACK segment address to AX
+    MOV SS, AX ; Load SS with STACK segment address
     POP AX ; Pop top of stack to AX
     POP AX ; Pop top of stack to AX again
 
     CALL CLEAR_SCREEN
+    CALL DISPLAY_MAIN_MENU
 
-CHECK_TIME: 
+    ; Wait for user input to select game mode
+    MOV AH, 00h
+    INT 16h
+    CMP AL, '1'
+    JE SINGLE_PLAYER_MODE
+    CMP AL, '2'
+    JE TWO_PLAYER_MODE
+    JMP MAIN ; if invalid input, redisplay menu
+
+SINGLE_PLAYER_MODE:
+    MOV GAME_MODE, 0
+    MOV AX, SINGLE_PLAYER_PADDLE_WIDTH
+    MOV PADDLE_LOWER_WIDTH, AX ; set lower paddle width to greater size in single-player mode
+    JMP START_GAME
+
+TWO_PLAYER_MODE:
+    MOV GAME_MODE, 1
+    MOV AX, ORIGINAL_PADDLE_WIDTH
+    MOV PADDLE_LOWER_WIDTH, AX ; set lower paddle width to original size in two-player mode
+    JMP START_GAME
+
+START_GAME:
+    CALL CLEAR_SCREEN
+
+CHECK_TIME:
+    CMP GAME_ACTIVE, 00h
+    JE SHOW_GAME_OVER
+
     MOV AH, 2Ch ; get system time
     INT 21h ; CH -> HOUR, CL -> MINUTES, DH -> SECONDS, DL -> 1/100 SECONDS
 
@@ -66,12 +109,14 @@ CHECK_TIME:
     CALL DRAW_PADDLES
 
     CALL DRAW_UI 
-            
+
     JMP CHECK_TIME ; check the time again after execution
-
-    RET 
+    
+SHOW_GAME_OVER:
+    CALL DRAW_GAME_OVER_MENU
+    CALL WAIT_FOR_KEY_PRESS
+    RET
 MAIN ENDP
-
 
 MOVE_BALL PROC NEAR
     MOV AX, BALL_VELOCITY_Y
@@ -95,7 +140,7 @@ GIVE_POINT_TO_FIRST_PLAYER:
 
     CALL RESET_BALL_POSITION
     CMP PADDLE_UPPER_POINTS, 0Ah
-    JGE GAME_OVER ; if the player has 10 or more => game is restarting. 
+    JGE GAME_OVER_FIRST_PLAYER ; if the player has 10 or more => game is restarting. 
     RET
 
 GIVE_POINT_TO_SECOND_PLAYER:
@@ -106,10 +151,54 @@ GIVE_POINT_TO_SECOND_PLAYER:
 
     CALL RESET_BALL_POSITION
     CMP PADDLE_LOWER_POINTS, 0Ah               
-    JGE GAME_OVER
+    JGE GAME_OVER_SECOND_PLAYER
     RET
 
+GAME_OVER_FIRST_PLAYER:
+    LEA SI, FIRST_PLAYER_WIN_MSG
+    LEA DI, GAME_OVER_WINNER
+    CALL COPY_STRING
+    JMP GAME_OVER
+
+GAME_OVER_SECOND_PLAYER:
+    LEA SI, SECOND_PLAYER_WIN_MSG
+    LEA DI, GAME_OVER_WINNER
+    CALL COPY_STRING
+    JMP GAME_OVER
+
+COPY_STRING PROC NEAR
+    ; Copies a null-terminated string from DS:SI to ES:DI
+    PUSH DS          ; save DS
+    PUSH ES          ; save ES
+    PUSH AX          ; save AX
+    PUSH CX          ; save CX
+    PUSH DI          ; save DI
+    PUSH SI
+
+    MOV AX, DATA     ; assume DS is already set to DATA segment
+    MOV DS, AX       ; set DS to point to DATA segment
+    MOV ES, AX       ; set ES to DATA segment (for destination)
+
+    CLD              ; clear direction flag for forward movement
+COPY_LOOP:
+    LODSB            ; load byte at DS:SI into AL, increment SI
+    STOSB            ; store byte in AL to ES:DI, increment DI
+    CMP AL, '$'      ; check for end of string
+    JNE COPY_LOOP    ; repeat until end of string
+
+    POP SI           ; restore SI
+    POP DI           ; restore DI
+    POP CX           ; restore CX
+    POP AX           ; restore AX
+    POP ES           ; restore ES
+    POP DS           ; restore DS
+    RET
+COPY_STRING ENDP
+
 GAME_OVER:      ; someone has reached 10 points
+    ; set game active to 0
+    MOV GAME_ACTIVE, 00h
+
     ; restart first player's points
     MOV PADDLE_UPPER_POINTS, 00h
     MOV AL, PADDLE_UPPER_POINTS
@@ -157,7 +246,7 @@ MOVE_BALL_HORIZONTALLY:
     JNG CHECK_COLLISION_WITH_UPPER_PADDLE
         
     MOV AX, PADDLE_LOWER_X 
-    ADD AX, PADDLE_WIDTH 
+    ADD AX, PADDLE_LOWER_WIDTH 
     CMP BALL_X, AX 
     JNL CHECK_COLLISION_WITH_UPPER_PADDLE
 
@@ -182,7 +271,7 @@ CHECK_COLLISION_WITH_UPPER_PADDLE:
     JNG EXIT_COLLISION
             
     MOV AX, PADDLE_UPPER_X 
-    ADD AX, PADDLE_WIDTH 
+    ADD AX, PADDLE_UPPER_WIDTH 
     CMP BALL_X, AX 
     JNL EXIT_COLLISION
 
@@ -239,7 +328,7 @@ MOVE_UPPER_PADDLE_RIGHT:
     ADD PADDLE_UPPER_X, AX  
     MOV AX, WIN_WIDTH 
     SUB AX, WIN_BOUNDS
-    SUB AX, PADDLE_WIDTH
+    SUB AX, PADDLE_UPPER_WIDTH
     CMP PADDLE_UPPER_X, AX 
     JG FIX_PADDLE_UPPER_RIGHT_POSITION
     JMP CHECK_LOWER_PADDLE_MOVEMENT
@@ -248,52 +337,52 @@ FIX_PADDLE_UPPER_RIGHT_POSITION:
     MOV PADDLE_UPPER_X, AX                      
     JMP CHECK_LOWER_PADDLE_MOVEMENT
 
-    ; Lower paddle
 CHECK_LOWER_PADDLE_MOVEMENT:
-    MOV AH, 01h 
+    MOV AH, 01h
     INT 16h
     JZ EXIT_MOVEMENT 
 
-    MOV AH, 00h 
-    INT 16h 
+    MOV AH, 00h
+    INT 16h
     ; If '4' move left
     CMP AL, 34h
     JE MOVE_LOWER_PADDLE_LEFT
     ; If '6' move right
-    CMP AL, 36h 
+    CMP AL, 36h
     JE MOVE_LOWER_PADDLE_RIGHT
-    JMP EXIT_MOVEMENT 
-        
-MOVE_LOWER_PADDLE_LEFT: 
+    JMP EXIT_MOVEMENT
+
+MOVE_LOWER_PADDLE_LEFT:
     MOV AX, PADDLE_VELOCITY
     SUB PADDLE_LOWER_X, AX
 
-    MOV AX, WIN_BOUNDS 
-    CMP PADDLE_LOWER_X, AX        
-    JL FIX_PADDLE_LOWER_LEFT_POSITION 
+    MOV AX, WIN_BOUNDS
+    CMP PADDLE_LOWER_X, AX
+    JL FIX_PADDLE_LOWER_LEFT_POSITION
     JMP EXIT_MOVEMENT
 
 FIX_PADDLE_LOWER_LEFT_POSITION:
-    MOV PADDLE_LOWER_X, AX                    
+    MOV PADDLE_LOWER_X, AX
     JMP EXIT_MOVEMENT
 
 MOVE_LOWER_PADDLE_RIGHT:
     MOV AX, PADDLE_VELOCITY
-    ADD PADDLE_LOWER_X, AX  
-    MOV AX, WIN_WIDTH 
+    ADD PADDLE_LOWER_X, AX
+    MOV AX, WIN_WIDTH
     SUB AX, WIN_BOUNDS
-    SUB AX, PADDLE_WIDTH
-    CMP PADDLE_LOWER_X, AX 
+    SUB AX, PADDLE_LOWER_WIDTH
+    CMP PADDLE_LOWER_X, AX
     JG FIX_PADDLE_LOWER_RIGHT_POSITION
     JMP CHECK_LOWER_PADDLE_MOVEMENT
 
 FIX_PADDLE_LOWER_RIGHT_POSITION:
-    MOV PADDLE_LOWER_X, AX                      
-    JMP EXIT_MOVEMENT    
+    MOV PADDLE_LOWER_X, AX
+    JMP EXIT_MOVEMENT
 
 EXIT_MOVEMENT:
-    RET 
+    RET
 MOVE_PADDLES ENDP
+
 
 RESET_BALL_POSITION PROC NEAR
     MOV AX, BALL_ORIGINAL_X
@@ -303,10 +392,88 @@ RESET_BALL_POSITION PROC NEAR
     RET
 RESET_BALL_POSITION ENDP
 
+DRAW_GAME_OVER_MENU PROC
+    CALL CLEAR_SCREEN
+
+    ; display "GAME OVER BUDDY" text
+    MOV AH, 02h ; set cursor position
+    MOV BH, 00h ; set page number
+    MOV DH, 04h ; set row
+    MOV DL, 10h ; set column (adjust as needed)
+    INT 10h     ; execute the interrupt to set cursor position
+
+    MOV AH, 09h
+    LEA DX, GAME_OVER_TEXT
+    INT 21h     ; display the game over text
+
+    ; display the winner text (First player won! or Second player won!)
+    MOV AH, 02h ; set cursor position
+    MOV BH, 00h ; set page number
+    MOV DH, 06h ; set row
+    MOV DL, 10h ; set column (adjust as needed)
+    INT 10h     ; execute the interrupt to set cursor position
+
+    MOV AH, 09h
+    LEA DX, GAME_OVER_WINNER
+    INT 21h     ; display the winner text
+
+    ; display "Press R to restart or M to return to main menu" text
+    MOV AH, 02h ; set cursor position
+    MOV BH, 00h ; set page number
+    MOV DH, 08h ; set row
+    MOV DL, 10h ; set column (adjust as needed)
+    INT 10h     ; execute the interrupt to set cursor position
+
+    MOV AH, 09h
+    LEA DX, RESTART_GAME_TEXT
+    INT 21h     ; display the restart or main menu text
+
+    RET
+DRAW_GAME_OVER_MENU ENDP
+
+WAIT_FOR_KEY_PRESS PROC
+    MOV AH, 00h
+    INT 16h
+    CMP AL, 'R'
+    JE RESTART_GAME
+    CMP AL, 'r'
+    JE RESTART_GAME
+    CMP AL, 'M'
+    JE RETURN_TO_MAIN_MENU
+    CMP AL, 'm'
+    JE RETURN_TO_MAIN_MENU
+    JMP WAIT_FOR_KEY_PRESS ; If invalid input, wait again
+
+RESTART_GAME:
+    MOV GAME_ACTIVE, 01h
+    JMP START_GAME
+
+RETURN_TO_MAIN_MENU:
+    JMP MAIN
+
+WAIT_FOR_KEY_PRESS ENDP
+
+DISPLAY_MAIN_MENU PROC
+    CALL CLEAR_SCREEN
+
+    ; Display "MAIN MENU" text
+    MOV AH, 02h ; set cursor position
+    MOV BH, 00h ; set page number
+    MOV DH, 04h ; set row
+    MOV DL, 10h ; set column
+    INT 10h     ; execute the interrupt to set cursor position
+
+    MOV AH, 09h
+    LEA DX, MAIN_MENU_TEXT
+    INT 21h     ; display the main menu text
+    RET
+DISPLAY_MAIN_MENU ENDP
+
+
 CLEAR_SCREEN PROC NEAR 
     MOV AH, 00h ; set to video mode configuration
     MOV AL, 13h ; choose the video mode
-    INT 10h ; cxecute the configuration
+    INT 10h ; execute the configuration
 
     MOV AH, 0Bh ; set the configuration 
     MOV BH, 00h ; to the background caller
@@ -360,7 +527,7 @@ DRAW_PADDLE_UPPER_VERTICAL:
     INC CX ; increment CX
     MOV AX, CX        
     SUB AX, PADDLE_UPPER_X
-    CMP AX, PADDLE_WIDTH
+    CMP AX, PADDLE_UPPER_WIDTH
     JNG DRAW_PADDLE_UPPER_VERTICAL
 
     MOV CX, PADDLE_UPPER_X 
@@ -384,7 +551,7 @@ DRAW_PADDLE_LOWER_VERTICAL:
     INC CX ; increment CX
     MOV AX, CX        
     SUB AX, PADDLE_LOWER_X
-    CMP AX, PADDLE_WIDTH
+    CMP AX, PADDLE_LOWER_WIDTH
     JNG DRAW_PADDLE_LOWER_VERTICAL
 
     MOV CX, PADDLE_LOWER_X 
@@ -398,31 +565,49 @@ DRAW_PADDLE_LOWER_VERTICAL:
 DRAW_PADDLES ENDP 
 
 DRAW_UI PROC NEAR 
+    ; Draw the points of text of the second player only in single-player mode
+    CMP GAME_MODE, 0
+    JE DRAW_SINGLE_PLAYER_UI
+
     ; Draw the points of text of the first player
     MOV AH, 02h ; set cursor position 
     MOV BH, 00h ; set page number         
     MOV DH, 04h ; set row 
     MOV DL, 06h ; set column 
-    INT 10h     ; 
+    INT 10h     
 
     MOV AH, 09h ; write to standard output
     LEA DX, TEXT_FIRST_PLAYER_POINTS ; give DX a pointer to the string
     INT 21h                          ; print the string
 
-    ; Draw the points of text of the second player
+    ; Draw the points of text of the second player in two-player mode
     MOV AH, 02h ; set cursor position 
     MOV BH, 00h ; set page number         
     MOV DH, 04h ; set row 
     MOV DL, 70h ; set column
-    INT 10h     ; 
+    INT 10h     
 
     MOV AH, 09h ; write to standard output
     LEA DX, TEXT_SECOND_PLAYER_POINTS ; give DX a pointer to the string
     INT 21h                          ; print the string
 
+    JMP DRAW_UI_END
+
+DRAW_SINGLE_PLAYER_UI:
+    ; Draw the points of text of the second player in single-player mode
+    MOV AH, 02h ; set cursor position 
+    MOV BH, 00h ; set page number         
+    MOV DH, 04h ; set row 
+    MOV DL, 70h ; set column
+    INT 10h     
+
+    MOV AH, 09h ; write to standard output
+    LEA DX, TEXT_SECOND_PLAYER_POINTS ; give DX a pointer to the string
+    INT 21h                          ; print the string
+
+DRAW_UI_END:
     RET 
 DRAW_UI ENDP
 
-  
 CODE ENDS
 END
