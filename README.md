@@ -1,5 +1,5 @@
 # PingPongAssembly16Bits
-A game destined for one or 2 players which resembles the old ping pong application. Used software interrupts to generate pixels. I used masm for this project.
+A game designed for one or two players, resembling the old ping pong application. It utilized software interrupts to generate pixels and was compiled using MASM.
 
 # Description
 The game works by detecting a collision. Whenever the ball touches a paddle, its velocity changes the direction. When a left or a right wall is hit,
